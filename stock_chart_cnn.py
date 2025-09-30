@@ -27,6 +27,23 @@ if sys.platform == 'win32':
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'ignore')
     sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'ignore')
 
+# GPU/CUDA 설정
+print("🔧 GPU/CUDA 설정 확인 중...")
+print(f"TensorFlow 버전: {tf.__version__}")
+print(f"GPU 사용 가능: {tf.config.list_physical_devices('GPU')}")
+
+# GPU 메모리 증가 설정
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print("✅ GPU 메모리 증가 설정 완료")
+    except RuntimeError as e:
+        print(f"⚠️ GPU 설정 오류: {e}")
+else:
+    print("⚠️ GPU를 찾을 수 없습니다. CPU로 학습합니다.")
+
 # 랜덤 시드 고정
 np.random.seed(42)
 tf.random.set_seed(42)
@@ -465,10 +482,7 @@ def main():
     print(f"🖥️  GPU 권장: NVIDIA GPU (CUDA)")
     print("=" * 60)
     
-    confirm = input("\n계속 진행하시겠습니까? (y/n): ")
-    if confirm.lower() != 'y':
-        print("❌ 학습이 취소되었습니다.")
-        return
+    print("\n🚀 자동으로 학습을 시작합니다...")
     
     # 7. 모델 학습 (더 많은 에포크)
     print("\n🚀 학습 시작!")
