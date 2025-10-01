@@ -1,9 +1,10 @@
 """
 주식 차트 패턴 기반 CNN 모델 - 개선 버전
-- Transfer Learning (EfficientNetB0) 적용
+- Transfer Learning (ResNet50) 적용 + Fine-tuning
 - 금융 차트에 적합한 Data Augmentation
 - Class Weight를 통한 불균형 해결
 - 개선된 평가 지표 (ROC-AUC, F1-score)
+- 2단계 학습: 1) Transfer Learning (Frozen) → 2) Fine-tuning (Unfreeze)
 """
 
 import os
@@ -19,7 +20,7 @@ from sklearn.metrics import (classification_report, confusion_matrix, accuracy_s
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers, models
-from tensorflow.keras.applications import EfficientNetB0
+from tensorflow.keras.applications import ResNet50
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import warnings
@@ -168,78 +169,90 @@ class ImprovedStockChartCNN:
         return self.train_generator, self.val_generator
     
     def build_model_with_transfer_learning(self):
-        """개선된 CNN 모델 구축 (Grayscale 최적화 + 더 깊은 구조)"""
-        print("\n🏗️  개선된 CNN 모델 구축 중...")
-        print("💡 Grayscale 이미지에 최적화된 구조")
+        """Transfer Learning을 활용한 모델 구축 (ResNet50)"""
+        print("\n🏗️  Transfer Learning 모델 구축 중 (ResNet50)...")
+        print("💡 ImageNet pretrained weights 활용")
         
-        # Grayscale에 최적화된 깊은 CNN 구조
-        model = models.Sequential([
-            # Conv Block 1
-            layers.Conv2D(64, (3, 3), activation='relu', padding='same', 
-                         input_shape=(self.img_size[0], self.img_size[1], 3)),
-            layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
-            layers.BatchNormalization(),
-            layers.MaxPooling2D((2, 2)),
-            layers.Dropout(0.3),
-            
-            # Conv Block 2
-            layers.Conv2D(128, (3, 3), activation='relu', padding='same'),
-            layers.Conv2D(128, (3, 3), activation='relu', padding='same'),
-            layers.BatchNormalization(),
-            layers.MaxPooling2D((2, 2)),
-            layers.Dropout(0.3),
-            
-            # Conv Block 3
-            layers.Conv2D(256, (3, 3), activation='relu', padding='same'),
-            layers.Conv2D(256, (3, 3), activation='relu', padding='same'),
-            layers.Conv2D(256, (3, 3), activation='relu', padding='same'),
-            layers.BatchNormalization(),
-            layers.MaxPooling2D((2, 2)),
-            layers.Dropout(0.3),
-            
-            # Conv Block 4
-            layers.Conv2D(512, (3, 3), activation='relu', padding='same'),
-            layers.Conv2D(512, (3, 3), activation='relu', padding='same'),
-            layers.BatchNormalization(),
-            layers.MaxPooling2D((2, 2)),
-            layers.Dropout(0.3),
-            
-            # Global Average Pooling (대신 Flatten)
-            layers.GlobalAveragePooling2D(),
-            
-            # Fully Connected Layers
-            layers.Dense(1024, activation='relu'),
-            layers.BatchNormalization(),
-            layers.Dropout(0.5),
-            layers.Dense(512, activation='relu'),
-            layers.BatchNormalization(),
-            layers.Dropout(0.5),
-            
-            # Output Layer
-            layers.Dense(1, activation='sigmoid')
-        ])
+        # ResNet50 base model (ImageNet pretrained)
+        base_model = ResNet50(
+            include_top=False,
+            weights='imagenet',
+            input_shape=(self.img_size[0], self.img_size[1], 3),
+            pooling='avg'  # Global Average Pooling
+        )
         
-        # 모델 컴파일 (개선된 learning rate)
+        # Base model layers를 처음에는 freeze (전이 학습 1단계)
+        base_model.trainable = False
+        
+        print(f"📊 ResNet50 Base Model 로드 완료")
+        print(f"   - 총 레이어: {len(base_model.layers)}개")
+        print(f"   - 초기 상태: Frozen (Transfer Learning)")
+        
+        # Custom top layers 구축
+        inputs = keras.Input(shape=(self.img_size[0], self.img_size[1], 3))
+        x = base_model(inputs, training=False)
+        x = layers.BatchNormalization()(x)
+        x = layers.Dropout(0.3)(x)
+        x = layers.Dense(512, activation='relu')(x)
+        x = layers.BatchNormalization()(x)
+        x = layers.Dropout(0.5)(x)
+        x = layers.Dense(256, activation='relu')(x)
+        x = layers.BatchNormalization()(x)
+        x = layers.Dropout(0.5)(x)
+        outputs = layers.Dense(1, activation='sigmoid')(x)
+        
+        model = keras.Model(inputs, outputs)
+        
+        # 모델 컴파일 (Transfer Learning용 낮은 learning rate)
         model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.0001),  # 낮은 learning rate
+            optimizer=keras.optimizers.Adam(learning_rate=0.0001),
             loss='binary_crossentropy',
             metrics=[
                 'accuracy',
                 keras.metrics.Precision(name='precision'),
                 keras.metrics.Recall(name='recall'),
                 keras.metrics.AUC(name='auc'),
-                keras.metrics.AUC(name='prc', curve='PR')  # Precision-Recall AUC
+                keras.metrics.AUC(name='prc', curve='PR')
             ]
         )
         
         self.model = model
+        self.base_model = base_model
         
-        print("✅ 개선된 CNN 모델 구축 완료")
+        print("✅ Transfer Learning 모델 구축 완료")
         print(f"📊 총 파라미터: {model.count_params():,}개")
         trainable_count = sum([tf.size(w).numpy() for w in model.trainable_weights])
+        non_trainable_count = sum([tf.size(w).numpy() for w in model.non_trainable_weights])
         print(f"   - Trainable: {trainable_count:,}개")
+        print(f"   - Non-trainable (Frozen): {non_trainable_count:,}개")
         
         return model
+    
+    def unfreeze_base_model(self, unfreeze_layers=50):
+        """Base model의 마지막 레이어들 unfreeze (Fine-tuning)"""
+        print(f"\n🔓 Fine-tuning 시작: 마지막 {unfreeze_layers}개 레이어 unfreeze...")
+        
+        # 마지막 N개 레이어만 trainable로 설정
+        self.base_model.trainable = True
+        for layer in self.base_model.layers[:-unfreeze_layers]:
+            layer.trainable = False
+        
+        # Fine-tuning을 위해 더 낮은 learning rate로 재컴파일
+        self.model.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=0.00001),  # 10배 낮은 learning rate
+            loss='binary_crossentropy',
+            metrics=[
+                'accuracy',
+                keras.metrics.Precision(name='precision'),
+                keras.metrics.Recall(name='recall'),
+                keras.metrics.AUC(name='auc'),
+                keras.metrics.AUC(name='prc', curve='PR')
+            ]
+        )
+        
+        trainable_count = sum([tf.size(w).numpy() for w in self.model.trainable_weights])
+        print(f"✅ Fine-tuning 준비 완료")
+        print(f"📊 Trainable 파라미터: {trainable_count:,}개")
     
     def train(self, epochs=30, save_path='models/improved_model.h5', use_class_weights=True):
         """개선된 학습 프로세스"""
@@ -261,7 +274,7 @@ class ImprovedStockChartCNN:
         callbacks = [
             EarlyStopping(
                 monitor='val_auc',
-                patience=10,
+                patience=20,  # 150 에포크에 맞게 증가
                 restore_best_weights=True,
                 mode='max',
                 verbose=1
@@ -276,7 +289,7 @@ class ImprovedStockChartCNN:
             ReduceLROnPlateau(
                 monitor='val_loss',
                 factor=0.5,
-                patience=5,
+                patience=10,  # 더 긴 patience
                 min_lr=1e-8,
                 verbose=1
             )
@@ -456,16 +469,17 @@ def main():
     """메인 실행 함수"""
     print("\n" + "=" * 60)
     print("🚀 개선된 주식 차트 패턴 CNN 모델")
-    print("💡 Transfer Learning + 최적화된 Augmentation")
+    print("💡 Transfer Learning (ResNet50) + Fine-tuning")
+    print("📊 5,000장 데이터셋으로 효율적 학습")
     print("=" * 60)
     
     # GPU/CPU에 따른 배치 크기 설정
     gpus = tf.config.experimental.list_physical_devices('GPU')
     batch_size = 128 if gpus else 64
     
-    # 1. 모델 객체 생성
+    # 1. 모델 객체 생성 (서브셋 데이터셋 사용)
     stock_cnn = ImprovedStockChartCNN(
-        data_dir='dataset-2021',
+        data_dir='dataset-subset-5k',  # 5,000장 서브셋 사용
         img_size=(100, 100),
         batch_size=batch_size
     )
@@ -480,16 +494,32 @@ def main():
     # 3. 데이터 제너레이터 생성
     stock_cnn.create_data_generators(validation_split=0.2)
     
-    # 4. 개선된 모델 구축
+    # 4. Transfer Learning 모델 구축 (ResNet50)
     stock_cnn.build_model_with_transfer_learning()
     
+    # ===== 1단계: Transfer Learning (Base model frozen) =====
     print("\n" + "=" * 60)
-    print("⚠️  개선된 모델 학습 시작")
+    print("⚠️  1단계: Transfer Learning (ResNet50 Frozen)")
     print("=" * 60)
+    print("💡 ImageNet 특징 추출기를 활용하여 학습합니다")
     print("🚀 자동으로 학습을 시작합니다...")
     
-    # 5. 모델 학습 (클래스 가중치 적용)
-    stock_cnn.train(epochs=30, save_path='models/improved_model_final.h5')
+    # 5. 1단계 학습 (Base model frozen, 75 에포크)
+    print("💡 5,000장 데이터셋으로 효율적인 학습 진행")
+    print("💡 Early Stopping (patience=20)으로 과적합 방지")
+    stock_cnn.train(epochs=75, save_path='models/improved_model_stage1.h5')
+    
+    # ===== 2단계: Fine-tuning (Base model 일부 unfreeze) =====
+    print("\n" + "=" * 60)
+    print("⚠️  2단계: Fine-tuning (ResNet50 일부 Unfreeze)")
+    print("=" * 60)
+    print("💡 ResNet50의 마지막 50개 레이어를 미세 조정합니다")
+    
+    # 6. Fine-tuning 준비
+    stock_cnn.unfreeze_base_model(unfreeze_layers=50)
+    
+    # 7. 2단계 학습 (Fine-tuning, 75 에포크)
+    stock_cnn.train(epochs=75, save_path='models/improved_model_final.h5')
     
     # 8. 포괄적인 평가
     accuracy, f1, roc_auc, cm, y_true, y_pred_proba = stock_cnn.evaluate_comprehensive()
@@ -519,7 +549,7 @@ def main():
     print(f"   - Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
     print(f"   - F1-Score: {f1:.4f}")
     print(f"   - ROC-AUC: {roc_auc:.4f}")
-    print("   - Transfer Learning (EfficientNetB0)")
+    print("   - Transfer Learning (ResNet50) + Fine-tuning")
     print("   - 클래스 가중치 적용")
     print("   - 금융 차트 최적화 Augmentation")
     
