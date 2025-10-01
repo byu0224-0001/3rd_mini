@@ -122,12 +122,11 @@ class ImprovedStockChartCNN:
         train_datagen = ImageDataGenerator(
             rescale=1./255,
             validation_split=validation_split,
-            rotation_range=3,           # 작은 회전만 (0-3도)
             width_shift_range=0.05,     # 작은 이동
             height_shift_range=0.05,    # 작은 이동
             horizontal_flip=False,      # 좌우 반전 제거 (시간 흐름 보존)
             vertical_flip=False,        # 상하 반전 제거
-            zoom_range=0.05,            # 작은 줌
+            zoom_range=0.02,            # 작은 줌
             brightness_range=[0.9, 1.1], # 밝기 조정
             fill_mode='nearest'
         )
