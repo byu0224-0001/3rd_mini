@@ -17,6 +17,11 @@ import seaborn as sns
 from datetime import datetime
 import io
 import platform
+from openai import OpenAI
+from dotenv import load_dotenv
+
+# .env 파일 로드
+load_dotenv()
 
 # 한글 폰트 설정 (matplotlib)
 if platform.system() == 'Windows':
@@ -222,6 +227,62 @@ def create_confidence_gauge(confidence, prediction_class):
     plt.tight_layout()
     return fig
 
+# LLM 기반 결과 해석 함수
+def interpret_with_llm(prediction_class, confidence, prediction_proba, api_key):
+    """
+    OpenAI API를 사용하여 예측 결과를 자연어로 해석
+    
+    Args:
+        prediction_class: 예측 클래스 (0: DOWN, 1: UP)
+        confidence: 예측 신뢰도 (0~1)
+        prediction_proba: 원본 UP 확률 (0~1)
+        api_key: OpenAI API 키
+    
+    Returns:
+        str: LLM의 해석 결과
+    """
+    try:
+        client = OpenAI(api_key=api_key)
+        
+        prediction_text = "상승(UP)" if prediction_class == 1 else "하락(DOWN)"
+        
+        prompt = f"""
+당신은 전문 주식 투자 분석가입니다. 다음 AI 모델의 예측 결과를 바탕으로 투자자에게 명확하고 실용적인 조언을 제공해주세요.
+
+**모델 예측 결과:**
+- 예측 방향: {prediction_text}
+- 예측 신뢰도: {confidence*100:.1f}%
+- 상승 확률: {prediction_proba*100:.1f}%
+- 하락 확률: {(1-prediction_proba)*100:.1f}%
+
+**요청사항:**
+1. 이 예측 결과가 의미하는 바를 쉽게 설명해주세요
+2. 신뢰도 수준({confidence*100:.1f}%)에 따른 투자 전략을 제시해주세요
+3. 주의해야 할 리스크 요인을 언급해주세요
+4. 구체적인 매매 타이밍 제안을 해주세요
+
+**답변 형식:**
+- 친근하고 전문적인 톤으로 작성
+- 3-4개 문단으로 구성
+- 이모지 사용 가능
+- 한국어로 작성
+"""
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "당신은 20년 경력의 전문 주식 투자 분석가입니다."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=800
+        )
+        
+        return response.choices[0].message.content
+    
+    except Exception as e:
+        return f"⚠️ LLM 해석 중 오류가 발생했습니다: {str(e)}"
+
 # 메인 애플리케이션
 def main():
     # 헤더
@@ -280,6 +341,33 @@ def main():
             
             또는 직접 차트 이미지를 업로드하세요.
             """)
+        
+        st.markdown("---")
+        
+        # LLM 설정
+        st.markdown("### 🤖 AI 해석")
+        
+        # .env에서 API 키 자동 로드 (OPENAI_API_KEYS 사용)
+        openai_api_key = os.getenv("OPENAI_API_KEYS")
+        
+        if openai_api_key:
+            st.success("✅ API 키 로드 완료 (.env)")
+            use_llm = st.checkbox("AI 투자 분석 활성화", value=False)
+        else:
+            st.warning("⚠️ .env 파일에 OPENAI_API_KEYS가 설정되지 않았습니다")
+            use_llm = st.checkbox("AI 투자 분석 활성화 (수동 입력)", value=False)
+            
+            if use_llm:
+                openai_api_key = st.text_input(
+                    "OpenAI API 키",
+                    type="password",
+                    help="OpenAI API 키를 입력하면 AI가 예측 결과를 자연어로 해석해줍니다."
+                )
+                
+                if openai_api_key:
+                    st.success("✅ API 키 입력 완료")
+                else:
+                    st.markdown("[OpenAI API 키 발급받기](https://platform.openai.com/api-keys)")
     
     # 모델 로딩 (입력 크기 자동 감지)
     model, img_size = load_model(model_path)
@@ -398,6 +486,31 @@ def main():
                     - 과거 패턴이 미래를 보장하지 않습니다
                     - 다른 기술적/기본적 분석과 함께 활용하세요
                     """)
+                
+                # LLM 기반 AI 해석
+                if use_llm and openai_api_key:
+                    st.markdown("---")
+                    st.markdown("### 🤖 AI 투자 분석")
+                    
+                    with st.spinner("🧠 AI가 결과를 분석하는 중..."):
+                        llm_interpretation = interpret_with_llm(
+                            prediction_class, 
+                            confidence, 
+                            prediction_proba, 
+                            openai_api_key
+                        )
+                    
+                    st.markdown(f"""
+                    <div style="background-color: #f0f8ff; padding: 1.5rem; border-radius: 10px; border-left: 4px solid #0066cc;">
+                        {llm_interpretation}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.caption("💡 이 분석은 AI(GPT-4o-mini)가 생성한 것으로 참고용입니다. 실제 투자 결정은 신중히 하세요.")
+                
+                elif use_llm and not openai_api_key:
+                    st.markdown("---")
+                    st.warning("🤖 AI 투자 분석을 사용하려면 왼쪽 사이드바에서 OpenAI API 키를 입력해주세요.")
         
         else:
             st.info("👈 왼쪽에서 차트 이미지를 업로드하세요")
