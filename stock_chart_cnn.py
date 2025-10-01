@@ -14,6 +14,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from PIL import Image
+import shutil
+import random
+from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (classification_report, confusion_matrix, accuracy_score,
                              roc_auc_score, roc_curve, f1_score, precision_recall_curve)
@@ -63,6 +66,82 @@ except Exception as e:
 # 랜덤 시드 고정
 np.random.seed(42)
 tf.random.set_seed(42)
+
+
+def create_subset_dataset(source_dir, target_dir, num_samples_per_class=2500):
+    """
+    랜덤 샘플링으로 서브셋 데이터셋 생성
+    
+    Args:
+        source_dir: 원본 데이터셋 디렉토리 (e.g., 'dataset-2021')
+        target_dir: 타겟 서브셋 디렉토리 (e.g., 'dataset-subset-5k')
+        num_samples_per_class: 각 클래스당 샘플 수 (기본값: 2500)
+    
+    Returns:
+        target_dir: 생성된 서브셋 디렉토리 경로
+    """
+    print("\n" + "="*60)
+    print("📦 랜덤 샘플링으로 서브셋 데이터셋 생성 중...")
+    print("="*60)
+    
+    # 타겟 디렉토리가 이미 존재하면 삭제
+    if os.path.exists(target_dir):
+        print(f"⚠️  기존 서브셋 디렉토리 삭제 중: {target_dir}")
+        shutil.rmtree(target_dir)
+    
+    # 타겟 디렉토리 생성
+    os.makedirs(target_dir, exist_ok=True)
+    
+    classes = ['up', 'down']
+    random.seed(42)  # 재현성을 위한 시드 고정
+    
+    for class_name in classes:
+        print(f"\n📂 클래스: {class_name}")
+        
+        # 원본 및 타겟 디렉토리 경로
+        source_class_dir = os.path.join(source_dir, class_name)
+        target_class_dir = os.path.join(target_dir, class_name)
+        
+        # 타겟 클래스 디렉토리 생성
+        os.makedirs(target_class_dir, exist_ok=True)
+        
+        # 원본 이미지 파일 리스트
+        all_files = [f for f in os.listdir(source_class_dir) 
+                     if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        
+        print(f"   📊 전체 이미지: {len(all_files):,}개")
+        
+        # 랜덤 샘플링
+        if len(all_files) > num_samples_per_class:
+            sampled_files = random.sample(all_files, num_samples_per_class)
+        else:
+            sampled_files = all_files
+            print(f"   ⚠️  요청한 샘플 수보다 적음. 전체 사용: {len(all_files):,}개")
+        
+        print(f"   🎯 샘플링된 이미지: {len(sampled_files):,}개")
+        
+        # 파일 복사
+        for i, filename in enumerate(sampled_files, 1):
+            src_path = os.path.join(source_class_dir, filename)
+            dst_path = os.path.join(target_class_dir, filename)
+            shutil.copy2(src_path, dst_path)
+            
+            if i % 500 == 0:
+                print(f"   ⏳ 복사 진행 중: {i}/{len(sampled_files)}")
+        
+        print(f"   ✅ 완료: {len(sampled_files):,}개 파일 복사됨")
+    
+    # 결과 요약
+    total_samples = sum(len(os.listdir(os.path.join(target_dir, c))) for c in classes)
+    print("\n" + "="*60)
+    print(f"✅ 서브셋 데이터셋 생성 완료!")
+    print(f"📂 위치: {target_dir}")
+    print(f"📊 총 샘플 수: {total_samples:,}개")
+    print(f"   - Up: {len(os.listdir(os.path.join(target_dir, 'up'))):,}개")
+    print(f"   - Down: {len(os.listdir(os.path.join(target_dir, 'down'))):,}개")
+    print("="*60)
+    
+    return target_dir
 
 
 class ImprovedStockChartCNN:
@@ -477,9 +556,29 @@ def main():
     gpus = tf.config.experimental.list_physical_devices('GPU')
     batch_size = 128 if gpus else 64
     
+    # 0. 서브셋 데이터셋 생성 (없으면 자동 생성)
+    source_dataset = 'dataset-2021'
+    target_dataset = 'dataset-subset-5k'
+    
+    if not os.path.exists(target_dataset):
+        print("\n💡 서브셋 데이터셋이 없습니다. 자동으로 생성합니다...")
+        create_subset_dataset(
+            source_dir=source_dataset,
+            target_dir=target_dataset,
+            num_samples_per_class=2500  # 각 클래스당 2,500장 = 총 5,000장
+        )
+    else:
+        print(f"\n✅ 서브셋 데이터셋이 이미 존재합니다: {target_dataset}")
+        # 기존 데이터셋 정보 출력
+        up_count = len([f for f in os.listdir(os.path.join(target_dataset, 'up')) 
+                       if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+        down_count = len([f for f in os.listdir(os.path.join(target_dataset, 'down')) 
+                         if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+        print(f"   📊 Up: {up_count:,}개, Down: {down_count:,}개 (총 {up_count + down_count:,}개)")
+    
     # 1. 모델 객체 생성 (서브셋 데이터셋 사용)
     stock_cnn = ImprovedStockChartCNN(
-        data_dir='dataset-subset-5k',  # 5,000장 서브셋 사용
+        data_dir=target_dataset,  # 5,000장 서브셋 사용
         img_size=(100, 100),
         batch_size=batch_size
     )
