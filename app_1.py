@@ -117,4 +117,59 @@ def display_prediction_ui(image, result):
         # 4-2. 상세 확률 표시 (Progress Bar & Metric)
         st.subheader("확률 분포")
         
-        st.metric(label="상승 (Up) 확률", value=f"{up_prob
+        st.metric(label="상승 (Up) 확률", value=f"{up_prob:.2%}")
+        st.progress(up_prob)
+
+        st.metric(label="하락 (Down) 확률", value=f"{down_prob:.2%}")
+        st.progress(down_prob)
+
+
+def main():
+    """메인 Streamlit 애플리케이션 실행 함수"""
+    
+    st.title("💰 주식 차트 패턴 예측 시스템")
+    st.markdown("---")
+    
+    # 1. 투자 리스크 경고 (가장 중요)
+    st.warning(
+        "⚠️ **면책 조항:** 이 모델은 교육/연구 목적이며, 예측 결과는 투자 조언이 아닙니다. "
+        "모든 투자 손실에 대한 책임은 투자자 본인에게 있습니다."
+    )
+    st.info(f"AI 모델은 **{IMG_SIZE[0]}x{IMG_SIZE[1]}** 크기의 차트 이미지를 분석하여 다음날 주가 방향을 예측합니다.")
+    st.markdown("---")
+    
+    # 2. 모델 로드
+    predictor = load_predictor()
+    if predictor is None:
+        st.stop() # 모델 로드 실패 시 앱 실행 중지
+
+    # 3. 파일 업로드 위젯
+    uploaded_file = st.file_uploader(
+        "분석할 차트 이미지를 선택하세요.", 
+        type=['jpg', 'jpeg', 'png']
+    )
+
+    if uploaded_file is not None:
+        # 4. 예측 실행 버튼
+        if st.button("📈 AI 패턴 분석 시작", type="primary"):
+            
+            with st.spinner('AI가 차트 패턴을 정밀 분석 중입니다...'):
+                # 5. 예측 수행 (메모리 처리)
+                try:
+                    # 파일 객체를 직접 함수로 전달
+                    image, result = predict_chart_from_bytes(predictor, uploaded_file)
+                    
+                    # 6. 결과 표시
+                    display_prediction_ui(image, result)
+
+                except Exception as e:
+                    st.error(f"예측 중 심각한 오류가 발생했습니다: {e}")
+                    st.exception(e)
+
+    st.markdown("---")
+    # 하단 캡션으로 모델 정보 표시
+    st.caption(f"Powered by CNN | 모델 경로: {MODEL_PATH} | 입력 크기: {IMG_SIZE[0]}x{IMG_SIZE[1]}")
+
+
+if __name__ == '__main__':
+    main()
