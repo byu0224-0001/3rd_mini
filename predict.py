@@ -38,9 +38,11 @@ class StockChartPredictor:
         print("✅ 모델 로드 완료")
         return model
     
-    def preprocess_image(self, image_path):
-        """이미지 전처리"""
-        img = Image.open(image_path)
+    def preprocess_image(self, image_source):
+        """이미지 전처리 (경로 또는 바이트 스트림을 허용)"""
+        
+        # PIL.Image.open()은 경로뿐만 아니라 바이트 스트림(BytesIO)도 처리 가능
+        img = Image.open(image_source) 
         
         # RGB로 변환 (RGBA일 경우 대비)
         if img.mode != 'RGB':
@@ -57,17 +59,21 @@ class StockChartPredictor:
         
         return img_array, img
     
-    def predict(self, image_path, verbose=True):
+    # 기존 predict 메서드를 수정하여 경로/바이트 처리를 통합
+    def predict(self, image_source, verbose=True): # 'image_path'를 'image_source'로 변경
         """예측 수행"""
         # 이미지 전처리
-        img_array, original_img = self.preprocess_image(image_path)
+        # image_source는 파일 경로 또는 BytesIO 객체가 될 수 있습니다.
+        img_array, original_img = self.preprocess_image(image_source) 
         
         # 예측
         prediction = self.model.predict(img_array, verbose=0)[0][0]
         
-        # 결과 정리
+        # 파일 이름은 image_source가 경로일 때만 추출 가능
+        file_name = os.path.basename(image_source) if isinstance(image_source, str) else "Uploaded Chart"
+
         result = {
-            'file': os.path.basename(image_path),
+            'file': file_name, # 파일명 추출 방식 수정
             'prediction': 'Up (상승)' if prediction > 0.5 else 'Down (하락)',
             'confidence': prediction if prediction > 0.5 else 1 - prediction,
             'up_probability': prediction,
