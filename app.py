@@ -19,6 +19,7 @@ import io
 import platform
 from openai import OpenAI
 from dotenv import load_dotenv
+from tensorflow.keras.applications.resnet50 import preprocess_input
 
 # .env 파일 로드
 load_dotenv()
@@ -92,7 +93,7 @@ st.markdown("""
 # 모델 로딩 함수 (캐싱)
 @st.cache_resource
 def load_model(model_path):
-    """학습된 모델 로딩 및 입력 크기 자동 감지"""
+    """학습된 모델 로딩 및 입력 크기, 전처리 타입 자동 감지"""
     try:
         if os.path.exists(model_path):
             model = keras.models.load_model(model_path)
@@ -102,22 +103,31 @@ def load_model(model_path):
             img_height = input_shape[1]
             img_width = input_shape[2]
             
+            # 모델 타입에 따른 전처리 방식 결정
+            if "resnet" in model_path.lower() or "stage2" in model_path.lower():
+                preprocess_type = "resnet"  # ResNet50 + preprocess_input 사용
+            elif "final" in model_path.lower() or "ensemble" in model_path.lower():
+                preprocess_type = "ensemble"  # 앙상블 모델은 0-1 정규화
+            else:
+                preprocess_type = "cnn"
+            
             print(f"[INFO] 모델 로드 완료: {model_path}")
             print(f"[INFO] 모델 입력 크기: {img_height}x{img_width}")
+            print(f"[INFO] 전처리 타입: {preprocess_type}")
             
-            return model, (img_width, img_height)
+            return model, (img_width, img_height), preprocess_type
         else:
             st.error(f"모델 파일을 찾을 수 없습니다: {model_path}")
-            return None, None
+            return None, None, None
     except Exception as e:
         st.error(f"모델 로딩 중 오류 발생: {e}")
-        return None, None
+        return None, None, None
 
-# 이미지 전처리 함수
-def preprocess_image(image, target_size=(128, 128)):
-    """업로드된 이미지를 모델 입력 형식으로 전처리"""
+# ResNet50 전용 전처리 함수
+def preprocess_for_resnet(image, target_size):
+    """ResNet50 모델용 이미지 전처리"""
     try:
-        # PIL Image를 RGB로 먼저 변환 (ResNet50은 RGB 필요)
+        # PIL Image를 RGB로 변환
         if image.mode != 'RGB':
             image = image.convert('RGB')
         
@@ -125,44 +135,113 @@ def preprocess_image(image, target_size=(128, 128)):
         img = image.resize(target_size)
         img_array = np.array(img)
         
-        # shape 확인 및 디버깅
-        print(f"[DEBUG] 전처리 전 이미지 shape: {img_array.shape}")
+        print(f"[DEBUG] ResNet 전처리 - 입력 shape: {img_array.shape}")
         
         # RGB 확인 (안전장치)
         if len(img_array.shape) == 2:
-            # Grayscale인 경우 RGB로 변환
             img_array = np.stack([img_array] * 3, axis=-1)
-            print(f"[DEBUG] Grayscale -> RGB 변환: {img_array.shape}")
         elif img_array.shape[2] == 4:
-            # RGBA인 경우 RGB로 변환
             img_array = img_array[:, :, :3]
-            print(f"[DEBUG] RGBA -> RGB 변환: {img_array.shape}")
         
         # 정규화 (0-255 -> 0-1)
         img_array = img_array.astype('float32') / 255.0
         
-        # 배치 차원 추가 [1, height, width, 3]
+        # 배치 차원 추가
         img_array = np.expand_dims(img_array, axis=0)
         
-        print(f"[DEBUG] 최종 입력 shape: {img_array.shape}")
-        print(f"[DEBUG] 값 범위: min={img_array.min():.4f}, max={img_array.max():.4f}")
+        # ResNet50 전처리 적용 (ImageNet 정규화)
+        processed_img = preprocess_input(img_array)
         
-        # shape 검증
-        expected_shape = (1, target_size[1], target_size[0], 3)
-        assert img_array.shape == expected_shape, f"잘못된 shape: {img_array.shape}, 예상: {expected_shape}"
+        print(f"[DEBUG] ResNet 전처리 - 최종 shape: {processed_img.shape}")
+        print(f"[DEBUG] ResNet 전처리 - 값 범위: min={processed_img.min():.4f}, max={processed_img.max():.4f}")
         
-        return img_array
+        return processed_img
     
     except Exception as e:
-        print(f"[ERROR] 이미지 전처리 중 오류: {e}")
+        print(f"[ERROR] ResNet 전처리 중 오류: {e}")
+        raise
+
+# 앙상블 모델 전용 전처리 함수 (final_v1.py 기준)
+def preprocess_for_ensemble(image, target_size):
+    """앙상블 모델용 이미지 전처리 (ResNet50 + EfficientNet + DenseNet)"""
+    try:
+        # PIL Image를 RGB로 변환
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # 크기 조정
+        img = image.resize(target_size)
+        img_array = np.array(img)
+        
+        print(f"[DEBUG] 앙상블 전처리 - 입력 shape: {img_array.shape}")
+        
+        # RGB 확인 (안전장치)
+        if len(img_array.shape) == 2:
+            img_array = np.stack([img_array] * 3, axis=-1)
+        elif img_array.shape[2] == 4:
+            img_array = img_array[:, :, :3]
+        
+        # 정규화 (0-255 -> 0-1) - final_v1.py의 rescale=1./255와 동일
+        img_array = img_array.astype('float32') / 255.0
+        
+        # 배치 차원 추가
+        processed_img = np.expand_dims(img_array, axis=0)
+        
+        print(f"[DEBUG] 앙상블 전처리 - 최종 shape: {processed_img.shape}")
+        print(f"[DEBUG] 앙상블 전처리 - 값 범위: min={processed_img.min():.4f}, max={processed_img.max():.4f}")
+        
+        return processed_img
+    
+    except Exception as e:
+        print(f"[ERROR] 앙상블 전처리 중 오류: {e}")
+        raise
+
+# 일반 CNN 전용 전처리 함수
+def preprocess_for_cnn(image, target_size):
+    """일반 CNN 모델용 이미지 전처리"""
+    try:
+        # PIL Image를 RGB로 변환
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # 크기 조정
+        img = image.resize(target_size)
+        img_array = np.array(img)
+        
+        print(f"[DEBUG] CNN 전처리 - 입력 shape: {img_array.shape}")
+        
+        # RGB 확인 (안전장치)
+        if len(img_array.shape) == 2:
+            img_array = np.stack([img_array] * 3, axis=-1)
+        elif img_array.shape[2] == 4:
+            img_array = img_array[:, :, :3]
+        
+        # 정규화 (0-255 -> 0-1)
+        img_array = img_array.astype('float32') / 255.0
+        
+        # 배치 차원 추가
+        processed_img = np.expand_dims(img_array, axis=0)
+        
+        print(f"[DEBUG] CNN 전처리 - 최종 shape: {processed_img.shape}")
+        print(f"[DEBUG] CNN 전처리 - 값 범위: min={processed_img.min():.4f}, max={processed_img.max():.4f}")
+        
+        return processed_img
+    
+    except Exception as e:
+        print(f"[ERROR] CNN 전처리 중 오류: {e}")
         raise
 
 # 예측 함수
-def predict_stock_chart(model, image, target_size):
+def predict_stock_chart(model, image, target_size, preprocess_type):
     """주식 차트 이미지 예측"""
     try:
-        # 이미지 전처리 (모델에 맞는 크기로)
-        processed_img = preprocess_image(image, target_size=target_size)
+        # 모델 타입에 따른 전처리
+        if preprocess_type == "resnet":
+            processed_img = preprocess_for_resnet(image, target_size)
+        elif preprocess_type == "ensemble":
+            processed_img = preprocess_for_ensemble(image, target_size)
+        else:
+            processed_img = preprocess_for_cnn(image, target_size)
         
         print(f"[DEBUG] 모델 입력 shape: {processed_img.shape}")
         
@@ -171,12 +250,21 @@ def predict_stock_chart(model, image, target_size):
         
         print(f"[DEBUG] 예측 확률값: {prediction_proba}")
         
-        # 이진 분류 결과
-        prediction_class = 1 if prediction_proba > 0.5 else 0
+        # 모델별 최적 임계값 설정
+        if preprocess_type == "resnet":
+            BEST_THRESHOLD = 0.5  # ResNet 모델용 임계값
+        elif preprocess_type == "ensemble":
+            BEST_THRESHOLD = 0.517  # 앙상블 모델용 임계값
+        else:
+            BEST_THRESHOLD = 0.5  # 기본 CNN 모델용 임계값
+        
+        prediction_class = 1 if prediction_proba > BEST_THRESHOLD else 0
+        
+        print(f"[DEBUG] 사용된 임계값: {BEST_THRESHOLD} (모델 타입: {preprocess_type})")
         
         print(f"[DEBUG] 예측 클래스: {prediction_class} ({'UP' if prediction_class == 1 else 'DOWN'})")
         
-        return prediction_class, prediction_proba
+        return prediction_class, prediction_proba, BEST_THRESHOLD
     
     except Exception as e:
         print(f"[ERROR] 예측 중 오류: {e}")
@@ -298,7 +386,7 @@ def main():
         
         # 모델 선택
         model_options = {
-            "앙상블 모델 (Fine-tuned)": "improved_model_final.h5",
+            "앙상블 모델 (ResNet50+EfficientNet+DenseNet)": "final_model.keras",
             "ResNet 모델 (Transfer Learning)": "stage2_best.keras"
         }
         
@@ -314,12 +402,20 @@ def main():
         
         # 정보
         st.markdown("### 📊 모델 정보")
-        st.markdown(f"""
-        - **아키텍처**: ResNet50
-        - **학습 방식**: Transfer Learning + Fine-tuning
-        - **입력 크기**: 자동 감지
-        - **클래스**: Up (상승) / Down (하락)
-        """)
+        if "앙상블" in selected_model_name:
+            st.markdown(f"""
+            - **아키텍처**: ResNet50 + EfficientNet + DenseNet
+            - **학습 방식**: 앙상블 (가중 평균)
+            - **입력 크기**: 자동 감지
+            - **클래스**: Up (상승) / Down (하락)
+            """)
+        else:
+            st.markdown(f"""
+            - **아키텍처**: ResNet50
+            - **학습 방식**: Transfer Learning + Fine-tuning
+            - **입력 크기**: 자동 감지
+            - **클래스**: Up (상승) / Down (하락)
+            """)
         
         st.markdown("---")
         
@@ -369,8 +465,8 @@ def main():
                 else:
                     st.markdown("[OpenAI API 키 발급받기](https://platform.openai.com/api-keys)")
     
-    # 모델 로딩 (입력 크기 자동 감지)
-    model, img_size = load_model(model_path)
+    # 모델 로딩 (입력 크기 및 전처리 타입 자동 감지)
+    model, img_size, preprocess_type = load_model(model_path)
     
     if model is None:
         st.error("⚠️ 모델을 로드할 수 없습니다. 먼저 모델을 학습시켜주세요.")
@@ -380,6 +476,14 @@ def main():
     
     st.success(f"✅ 모델 로드 완료: {selected_model_name}")
     st.info(f"📐 모델 입력 크기: {img_size[0]}x{img_size[1]} 픽셀")
+    
+    # 전처리 방식 설명
+    if preprocess_type == "ensemble":
+        st.info(f"🔧 전처리 방식: 앙상블 (0-1 정규화)")
+    elif preprocess_type == "resnet":
+        st.info(f"🔧 전처리 방식: ResNet (ImageNet 정규화)")
+    else:
+        st.info(f"🔧 전처리 방식: CNN (0-1 정규화)")
     
     # 메인 컨텐츠
     col1, col2 = st.columns([1, 1])
@@ -414,8 +518,8 @@ def main():
         if uploaded_file is not None:
             with st.spinner("🔍 차트 패턴 분석 중..."):
                 try:
-                    # 예측 수행 (모델에 맞는 크기로 자동 전처리)
-                    prediction_class, prediction_proba = predict_stock_chart(model, image, img_size)
+                    # 예측 수행 (모델 타입에 맞는 전처리 적용)
+                    prediction_class, prediction_proba, BEST_THRESHOLD = predict_stock_chart(model, image, img_size, preprocess_type)
                     
                     # 예측된 클래스에 대한 신뢰도 계산
                     if prediction_class == 1:  # UP 예측
@@ -461,6 +565,7 @@ def main():
                     <strong>상세 분석</strong><br>
                     예측 클래스: <strong>{prediction_text}</strong><br>
                     모델 원본 확률: <strong>{prediction_proba:.4f}</strong> (UP: {prediction_proba*100:.2f}%, DOWN: {(1-prediction_proba)*100:.2f}%)<br>
+                    사용된 임계값: <strong>{BEST_THRESHOLD:.3f}</strong> ({preprocess_type.upper()} 모델)<br>
                     예측 신뢰도: <strong>{confidence:.4f}</strong> ({confidence*100:.2f}%)<br>
                     신뢰도 수준: <strong>{'높음' if confidence > 0.7 else '보통' if confidence > 0.55 else '낮음'}</strong>
                 </div>
@@ -470,7 +575,12 @@ def main():
                 
                 # 해석 가이드
                 with st.expander("📊 결과 해석 가이드"):
-                    st.markdown("""
+                    st.markdown(f"""
+                    **모델별 임계값**:
+                    - **ResNet 모델**: {0.5:.3f} (기본값)
+                    - **앙상블 모델**: {0.517:.3f} (최적화된 값)
+                    - **CNN 모델**: {0.5:.3f} (기본값)
+                    
                     **신뢰도 해석**:
                     - **70% 이상**: 높은 신뢰도 - 모델이 해당 방향에 대해 확신
                     - **55% ~ 70%**: 보통 신뢰도 - 어느 정도 확신하지만 불확실성 존재
